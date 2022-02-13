@@ -29,6 +29,7 @@ module Pod
         end
         UI.message "🎉 plugin cocoapods-dev-env loaded 🎉".green
     end
+    
 class Podfile
     class TargetDefinition
         attr_reader :binary_repo_url
