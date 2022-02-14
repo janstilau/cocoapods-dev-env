@@ -29,7 +29,7 @@ module Pod
         end
         UI.message "🎉 plugin cocoapods-dev-env loaded 🎉".green
     end
-    
+
 class Podfile
     class TargetDefinition
         attr_reader :binary_repo_url
@@ -61,6 +61,8 @@ class Podfile
                 raise "submodule #{path} 移除失败，有未提交的修改"
             end
             Dir.chdir(_currentDir)
+
+            # 删除, submodule, 应该使用以下的命令. 
             `
             git submodule deinit #{path}
             rm -rf #{path}
@@ -113,6 +115,7 @@ class Podfile
             return ret
         end
 
+# 给 Pod 库添加 tag 的信息.
         def addGitTagAndPush(tag, pod_name)
             ret = system("git tag #{tag}")
             if ret == true
@@ -177,6 +180,7 @@ class Podfile
                 return
             end
             specName = name + ".podspec"
+            #  这里, 是在修改 podspec 里面的 Version 的信息. 
             FileProcesserManager.new(specName, 
                 [
                     FileProcesser.new(-> (fileContent) {
@@ -266,6 +270,7 @@ class Podfile
                 end
                 UI.message "pod #{pod_name.green} enabled #{"subtree".green}-mode 🍺"
             elsif dev_env == 'dev'
+
                 # 开发模式，使用path方式引用本地的submodule git库
                 if !File.directory?(path)
                     UI.puts "add submodule for #{pod_name.green}".yellow
@@ -295,12 +300,15 @@ class Podfile
                     #     searchAndOpenLocalExample(path)
                     # end
                 end
+
+                # dev 的模式下, 将 Pod 库下载到本地, 使用本地的路径进行索引. 
                 options[:path] = path
                 if requirements.length >= 2
                     requirements.delete_at(0)
                 end
                 UI.message "pod #{pod_name.green} enabled #{"dev".green}-mode 🍺"
             elsif dev_env == 'beta'
+
                 # Beta模式，使用tag引用远端git库的代码
                 originTag = tag
                 tag = "#{tag}_beta"
@@ -323,6 +331,7 @@ class Podfile
                         end
                     else
                         # tag不存在，
+                        # 修改 podspec 里面的内容
                         changeVersionInCocoapods(pod_name, originTag)
                         checkGitStatusAndPush(pod_name) # 再push一下
                         addGitTagAndPush(tag, pod_name)    
@@ -330,14 +339,21 @@ class Podfile
                     Dir.chdir(_currentDir)
                     checkAndRemoveSubmodule(path)
                 end
+
+                # 前面, Push 本地的数据到 pod 库的仓库里面, 使用了特殊的 tag 进行标记. 然后, 在主工程里面, 使用这个特殊的 tag 进行索引.
+                # beta 的这种方式, 使用了特殊的 tag. 在这里进行指定.
                 options[:git] = git
                 options[:tag] = tag
                 if requirements.length >= 2
                     requirements.delete_at(0)
                 end
                 UI.message "enabled #{"beta".green}-mode for #{pod_name.green}"
+
             elsif dev_env == 'release'
                 # Release模式，直接使用远端对应的版本
+
+                # 如果, 在本地数据, 那么就会进行发布的处理. release 模式下, 会走私有库 lint 的操作. 
+                # 发布完数据之后, Pod 默认其实就是 pod 库名称, git, tag 的方式进行的管理. 
                 if File.directory?(path)
                     UI.puts "release release-version for #{pod_name.green}".yellow
                     _currentDir = Dir.pwd
@@ -362,6 +378,7 @@ class Podfile
                         end
                     end
                     ## TODO:: 发布到的目标库名称需要用变量设置
+                    # 将, 第三方私有库的 spec 传递给 私有 Repo.
                     repoAddrs = getUserRepoAddress()
                     cmd = "pod repo push #{repoAddrs} #{pod_name}.podspec --skip-import-validation --allow-warnings --use-modular-headers#{getReposStrForLint()}#{verboseParamStr}"
                     UI.puts cmd.green
@@ -374,6 +391,7 @@ class Podfile
                     Dir.chdir(_currentDir)
                     checkAndRemoveSubmodule(path)
                 end
+
                 if requirements.length < 2
                     requirements.insert(0, "#{tag}")
                 end
