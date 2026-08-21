@@ -92,21 +92,16 @@ module Pod
                 isFromSubProject = false
                 if dev_env == 'parent'
                     parentPodInfo = $parentPodlockDependencyHash[pod_name]
-                    if parentPodInfo != nil
+                    if parentPodInfo == nil && Pod::DevEnv.parent_project_environment != nil
+                        raise "💔 父工程 Podfile.lock 中不存在 #{pod_name}"
+                    elsif Pod::DevEnv.parent_project_environment != nil
+                        # 完整父工程环境模式由 Resolver 统一叠加父版本/source，保留
+                        # 子 Podfile 显式写下的 version/source/path/git 覆盖。
+                        return
+                    elsif parentPodInfo != nil
                         if parentPodInfo.external_source != nil
-                            git = parentPodInfo.external_source[:git]
-                            if git != nil
-                                options[:git] = git
-                            end
-                            tag = parentPodInfo.external_source[:tag]
-                            if tag != nil
-                                options[:tag] = tag
-                            end
-                            path = parentPodInfo.external_source[:path]
-                            if path != nil
-                                options[:path] = path
-                            end
-                        elsif (parentPodInfo.podspec_repo.start_with?("http") || parentPodInfo.podspec_repo.start_with?("git"))
+                            options.merge!(parentPodInfo.external_source)
+                        elsif parentPodInfo.podspec_repo != nil
                             #UI.puts 'XXXXXXXXXXXXXXXX123' + parentPodInfo.inspect
                             requirements.insert(0, parentPodInfo.requirement.to_s)
                             options[:source] = parentPodInfo.podspec_repo
@@ -407,4 +402,3 @@ module Pod
         end
     end
 end
-

@@ -1,0 +1,13 @@
+plugin 'cocoapods-dev-env'
+
+unless defined?(Cocoapods::Dev::Env::VERSION) && Cocoapods::Dev::Env::VERSION == '2.2.5'
+  raise 'integration fixture did not load cocoapods-dev-env 2.2.5'
+end
+
+use_parent_project_environment! :path => '../../Parent'
+install! 'cocoapods', :integrate_targets => false
+platform :ios, '13.0'
+
+target 'Child' do
+  pod 'CurrentPod', :path => '..'
+end

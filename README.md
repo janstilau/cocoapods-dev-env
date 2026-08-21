@@ -42,12 +42,34 @@ Finally the state clean submodule will be removed automatically.
 3. When you define "dev_env" to "release", and run ```pod install``` . 
 We want to use the release version in cocoapods repo. And do many check for state, and help you to release the not released pod.  
 
-2.2.x 新增功能: 支持读取宿主工程的Podfile.lock文件，来获取宿主工程中的依赖，无需在单独的库的example工程中引用对应的pod
-        此功能默认开启, 等同于在顶部写入如下配置: use_parent_lock_info!
-        关闭方法 use_parent_lock_info! false
-        宿主工程路径默认为"../../../"(因为默认放到developing_pods子文件夹下，对应的库文件夹下的Example文件夹下，故需要回溯三层)
-        配置宿主工程相对路径的方法 use_parent_lock_info! :path => '../'
-        暂不支持配置绝对路径，未来也不建议配置绝对路径指向固定的位置
+2.2.x 的 `use_parent_lock_info!` 只投影父 Podfile 的顶层依赖，保留用于兼容已有工程。
+
+2.2.5 新增完整父工程环境模式：
+
+```ruby
+plugin 'cocoapods-dev-env'
+use_parent_project_environment! :path => '../../../'
+
+target 'Example' do
+  pod 'CurrentPod', :path => '../'
+  pod 'YDCommon', :dev_env => 'parent'
+end
+```
+
+`use_parent_project_environment!` 会读取父 `Podfile.lock` 的完整 `PODS`、`SPEC REPOS`、
+`EXTERNAL SOURCES` 和 `CHECKOUT OPTIONS`。子工程实际解析到的依赖默认使用父工程的精确
+版本与 source；父工程中通过 path 引用的 Pod 会按父 lock 所在目录解析，再换算为子 Podfile
+可用的相对路径。
+
+当 `:dev_env => 'parent'` 声明 root Pod 时，会复用父 lock 中实际启用的 subspec。显式声明
+某个 subspec 时只使用该 subspec：
+
+```ruby
+pod 'YDCommon/Echo', :dev_env => 'parent'
+```
+
+子 Podfile 的显式 version、`:source`、`:git` 或 `:path` 是有意覆盖；未覆盖的依赖仍继承父
+环境。未显式覆盖且父 lock 中不存在的依赖会直接报错，不会静默选择其他版本或 source。
         
 
 

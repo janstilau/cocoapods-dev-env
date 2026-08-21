@@ -1,0 +1,22 @@
+PODS:
+  - CurrentPod (1.0.0):
+    - Transitive
+  - Transitive (1.0.0)
+
+DEPENDENCIES:
+  - CurrentPod (from `../Child`)
+  - Transitive (from `developing_pods/Transitive`)
+
+EXTERNAL SOURCES:
+  CurrentPod:
+    :path: ../Child
+  Transitive:
+    :path: developing_pods/Transitive
+
+SPEC CHECKSUMS:
+  CurrentPod: current-pod
+  Transitive: transitive
+
+PODFILE CHECKSUM: parent
+
+COCOAPODS: 1.16.2

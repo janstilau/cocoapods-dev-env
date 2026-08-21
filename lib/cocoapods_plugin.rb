@@ -1,3 +1,5 @@
+require 'cocoapods/dev/env/version'
+require 'parent_project_environment'
 require 'dev_env_entry'
 require 'resolver_binary'
 require 'resolver_universal_dependency'
