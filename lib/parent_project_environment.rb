@@ -2,6 +2,7 @@
 
 require 'cocoapods'
 require 'pathname'
+require 'set'
 
 module Pod
   class DevEnv
@@ -22,6 +23,8 @@ module Pod
 
       def reset_parent_dependency_overrides!
         @parent_dependency_overrides = {}
+        @direct_parent_environment_roots = {}
+        @parent_root_expansion_stack = []
       end
 
       def parent_dependency_override(root_name)
@@ -39,6 +42,27 @@ module Pod
           external_source: merged_external_source,
           full: full || current&.full || false,
         )
+      end
+
+      def register_direct_parent_environment_root(root_name)
+        @direct_parent_environment_roots ||= {}
+        @direct_parent_environment_roots[root_name] = true
+      end
+
+      def direct_parent_environment_root?(root_name)
+        (@direct_parent_environment_roots || {}).key?(root_name)
+      end
+
+      def expanding_parent_root?(root_name)
+        Array(@parent_root_expansion_stack).include?(root_name)
+      end
+
+      def with_parent_root_expansion(root_name)
+        @parent_root_expansion_stack ||= []
+        @parent_root_expansion_stack << root_name
+        yield
+      ensure
+        @parent_root_expansion_stack.pop
       end
     end
 
@@ -68,6 +92,7 @@ module Pod
         @external_sources = normalized_hash(lockfile.internal_data['EXTERNAL SOURCES'])
         @checkout_options = normalized_hash(lockfile.internal_data['CHECKOUT OPTIONS'])
         @subspecs_by_root = build_subspecs_by_root
+        @pod_dependencies_by_name = build_pod_dependencies_by_name
         @dependencies = build_dependencies.freeze
       end
 
@@ -86,6 +111,45 @@ module Pod
       def external_source_for(name)
         dependency = dependency_for(name)
         dependency&.external_source&.dup
+      end
+
+      # Starting from the child's textual target dependencies, walk the parent
+      # lock graph and add only sibling subspecs that are selected in the
+      # parent but would otherwise be absent. Normal transitive dependencies
+      # remain transitive, and any root directly scoped by the child Podfile is
+      # left untouched.
+      def dependencies_with_parent_subspec_closure(child_dependencies)
+        scheduled = child_dependencies.map(&:name).to_set
+        queue = scheduled.to_a
+        additions = Set.new
+        expanded_roots = Set.new
+
+        until queue.empty?
+          name = queue.shift
+          root_name = Specification.root_name(name)
+          next unless dependencies.key?(root_name)
+
+          unless expanded_roots.include?(root_name) || DevEnv.direct_parent_environment_root?(root_name)
+            expanded_roots << root_name
+            subspecs_for(root_name).each do |subspec|
+              sibling_name = "#{root_name}/#{subspec}"
+              next if scheduled.include?(sibling_name)
+
+              scheduled << sibling_name
+              additions << sibling_name
+              queue << sibling_name
+            end
+          end
+
+          @pod_dependencies_by_name.fetch(name, []).each do |dependency_name|
+            next if scheduled.include?(dependency_name)
+
+            scheduled << dependency_name
+            queue << dependency_name
+          end
+        end
+
+        child_dependencies + additions.sort.map { |name| Dependency.new(name) }
       end
 
       def relative_parent_directory
@@ -143,6 +207,22 @@ module Pod
           result[root_name] << name.delete_prefix("#{root_name}/")
         end
         result.transform_values { |values| values.uniq.sort.freeze }.freeze
+      end
+
+      def build_pod_dependencies_by_name
+        Array(lockfile.internal_data['PODS']).each_with_object({}) do |entry, result|
+          display_name, dependencies = if entry.is_a?(Hash)
+                                         [entry.keys.first, entry.values.first]
+                                       else
+                                         [entry, []]
+                                       end
+          name = locked_spec_name(display_name)
+          result[name] = Array(dependencies).map { |dependency| locked_spec_name(dependency) }.uniq.freeze
+        end.freeze
+      end
+
+      def locked_spec_name(value)
+        value.to_s.sub(/\s+\(.+\)\z/, '')
       end
 
       def roots
@@ -227,10 +307,14 @@ module Pod
         options = requirements.last.is_a?(Hash) ? requirements.last.dup : {}
         dev_env = options[:dev_env]
         root_name = Specification.root_name(name)
+        environment = DevEnv.parent_project_environment
+
+        if environment && !DevEnv.expanding_parent_root?(root_name)
+          DevEnv.register_direct_parent_environment_root(root_name)
+        end
 
         capture_parent_environment_override(root_name, requirements, options, dev_env)
 
-        environment = DevEnv.parent_project_environment
         if environment && dev_env == 'parent' && name == root_name && !options.key?(:subspecs)
           subspecs = environment.subspecs_for(root_name)
           unless subspecs.empty?
@@ -241,10 +325,21 @@ module Pod
             else
               requirements << options
             end
+            return DevEnv.with_parent_root_expansion(root_name) do
+              super(name, *requirements)
+            end
           end
         end
 
         super(name, *requirements)
+      end
+
+      def dependencies
+        child_dependencies = super
+        environment = DevEnv.parent_project_environment
+        return child_dependencies unless environment
+
+        environment.dependencies_with_parent_subspec_closure(child_dependencies)
       end
 
       private

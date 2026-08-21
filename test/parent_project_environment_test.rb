@@ -21,6 +21,39 @@ class ResolverSearchHarness < ResolverSearchBase
   prepend Pod::Resolver::ParentProjectEnvironmentResolver
 end
 
+class ResolverDependenciesBase
+  def dependencies_for(_specification)
+    []
+  end
+end
+
+class ResolverDependenciesHarness < ResolverDependenciesBase
+  prepend Pod::Resolver::ParentProjectEnvironmentResolver
+end
+
+class ResolverSpecsByTargetBase
+  def resolver_specs_by_target
+    @base_specs_by_target
+  end
+
+  def validate_platform(_specification, _target)
+    true
+  end
+
+  def edge_is_valid_for_target_platform?(_edge, _platform)
+    true
+  end
+end
+
+class ResolverSpecsByTargetHarness < ResolverSpecsByTargetBase
+  prepend Pod::Resolver::ParentProjectEnvironmentResolver
+
+  def initialize(activated, base_specs_by_target)
+    @activated = activated
+    @base_specs_by_target = base_specs_by_target
+  end
+end
+
 class ParentProjectEnvironmentTest < Minitest::Test
   def setup
     @temporary_directory = Pathname.new(Dir.mktmpdir('cocoapods-dev-env-test-'))
@@ -66,6 +99,22 @@ class ParentProjectEnvironmentTest < Minitest::Test
     assert constrained.requirement.satisfied_by?(Pod::Version.new('2.3.0'))
     refute constrained.requirement.satisfied_by?(Pod::Version.new('2.4.0'))
     assert_equal 'private-specs', constrained.podspec_repo
+  end
+
+  def test_parent_lock_graph_adds_only_missing_transitive_sibling_subspecs
+    environment = load_environment
+
+    dependencies = environment.dependencies_with_parent_subspec_closure(
+      [Pod::Dependency.new('LocalRoot/Core')],
+    )
+
+    assert_equal ['LocalRoot/Core', 'LocalRoot/Feature'], dependencies.map(&:name).sort
+
+    Pod::DevEnv.register_direct_parent_environment_root('LocalRoot')
+    scoped = environment.dependencies_with_parent_subspec_closure(
+      [Pod::Dependency.new('LocalRoot/Core')],
+    )
+    assert_equal ['LocalRoot/Core'], scoped.map(&:name)
   end
 
   def test_explicit_child_version_overrides_parent_version_but_keeps_parent_source
@@ -217,6 +266,59 @@ class ParentProjectEnvironmentTest < Minitest::Test
     assert_equal 'private-specs', dependency.podspec_repo
   end
 
+  def test_transitive_root_expands_parent_selected_subspecs
+    load_environment
+    specification = Struct.new(:name, :version).new('LocalRoot', Pod::Version.new('1.0.0'))
+    resolver = ResolverDependenciesHarness.new
+
+    dependencies = resolver.dependencies_for(specification)
+
+    assert_equal ['LocalRoot/Core', 'LocalRoot/Feature'], dependencies.map(&:name).sort
+    assert dependencies.all? { |dependency| dependency.specific_version == Pod::Version.new('1.0.0') }
+    assert_equal(
+      ['LocalRoot/Core', 'LocalRoot/Feature'],
+      resolver.dependencies_for(specification).map(&:name).sort,
+    )
+
+    sibling = Struct.new(:name, :version).new('LocalRoot/Feature', Pod::Version.new('1.0.0'))
+    assert_empty resolver.dependencies_for(sibling)
+  end
+
+  def test_resolved_parent_subspecs_are_retained_in_target_membership
+    load_environment
+    root_spec = Pod::Specification.new do |spec|
+      spec.name = 'LocalRoot'
+      spec.version = '1.0.0'
+      spec.summary = 'root'
+      spec.author = 'test'
+      spec.license = 'MIT'
+      spec.homepage = 'https://example.invalid'
+      spec.source = { :git => 'https://example.invalid/LocalRoot.git' }
+      spec.subspec('Core') { |subspec| subspec.source_files = 'Core/**/*' }
+      spec.subspec('Feature') { |subspec| subspec.source_files = 'Feature/**/*' }
+    end
+    core_spec = root_spec.subspec_by_name('LocalRoot/Core')
+    feature_spec = root_spec.subspec_by_name('LocalRoot/Feature')
+    activated = Molinillo::DependencyGraph.new
+    [root_spec, core_spec, feature_spec].each do |specification|
+      activated.add_vertex(specification.name, specification)
+    end
+    target = Struct.new(:platform).new(Pod::Platform.new(:ios, '15.0'))
+    source = nil
+    root_resolver_spec = Pod::Resolver::ResolverSpecification.new(root_spec, false, source)
+    resolver = ResolverSpecsByTargetHarness.new(
+      activated,
+      { target => [root_resolver_spec] },
+    )
+
+    result = resolver.resolver_specs_by_target.fetch(target)
+
+    assert_equal(
+      ['LocalRoot', 'LocalRoot/Core', 'LocalRoot/Feature'],
+      result.map(&:name),
+    )
+  end
+
   def test_parent_root_declaration_expands_parent_selected_subspecs
     podfile_path = @consumer_directory.join('Podfile')
     relative_parent = @parent_directory.relative_path_from(@consumer_directory)
@@ -252,6 +354,10 @@ class ParentProjectEnvironmentTest < Minitest::Test
     podfile = Pod::Podfile.from_file(podfile_path)
 
     assert_equal ['LocalRoot/Core'], podfile.dependencies.map(&:name)
+
+    specification = Struct.new(:name, :version).new('LocalRoot', Pod::Version.new('1.0.0'))
+    inherited = ResolverDependenciesHarness.new.dependencies_for(specification)
+    assert_empty inherited
   end
 
   def test_unconfigured_transitive_dependency_missing_from_parent_fails

@@ -28,6 +28,88 @@ module Pod
         super(dependency)
       end
 
+      # A root reached only through podspec dependencies has no textual
+      # Podfile declaration whose :subspecs can be expanded. Recreate the
+      # parent's selected subspec closure when that root becomes reachable,
+      # while leaving every direct child Podfile root/subspec choice intact.
+      def dependencies_for(specification)
+        dependencies = super
+        environment = DevEnv.parent_project_environment
+        return dependencies unless environment
+
+        root_name = Specification.root_name(specification.name)
+        return dependencies unless specification.name == root_name
+        return dependencies if DevEnv.direct_parent_environment_root?(root_name)
+
+        override = DevEnv.parent_dependency_override(root_name)
+        return dependencies if override&.explicit?
+
+        inherited = environment.subspecs_for(root_name).map do |subspec|
+          Dependency.new("#{root_name}/#{subspec}").tap do |dependency|
+            dependency.specific_version = specification.version
+          end
+        end
+        (dependencies + inherited).uniq
+      end
+
+      # CocoaPods resolves the synthetic parent-subspecced edges above, but its
+      # target filter later replays only dependencies declared by the original
+      # podspec. Reattach the already-resolved sibling vertices, plus their
+      # valid dependency edges, to each target that reaches that transitive
+      # root. This changes target membership only; it never adds an unrelated
+      # parent root to the resolution graph.
+      def resolver_specs_by_target
+        specs_by_target = super
+        environment = DevEnv.parent_project_environment
+        return specs_by_target unless environment && @activated
+
+        specs_by_target.each do |target, resolved_specs|
+          selected = resolved_specs.each_with_object({}) do |resolver_spec, result|
+            result[resolver_spec.name] = resolver_spec
+          end
+          queue = resolved_specs.each_with_object([]) do |resolver_spec, result|
+            vertex = @activated.vertex_named(resolver_spec.name)
+            result << [vertex, resolver_spec.used_by_non_library_targets_only?] if vertex
+          end
+
+          add_vertex = lambda do |vertex, used_by_non_library_targets_only|
+            next if vertex.nil? || selected.key?(vertex.name)
+
+            validate_platform(vertex.payload, target)
+            payload = vertex.payload
+            source = payload.respond_to?(:spec_source) && payload.spec_source
+            resolver_spec = ResolverSpecification.new(
+              payload,
+              used_by_non_library_targets_only,
+              source,
+            )
+            selected[vertex.name] = resolver_spec
+            queue << [vertex, used_by_non_library_targets_only]
+          end
+
+          until queue.empty?
+            vertex, used_by_non_library_targets_only = queue.shift
+            root_name = Specification.root_name(vertex.name)
+            unless DevEnv.direct_parent_environment_root?(root_name)
+              environment.subspecs_for(root_name).each do |subspec|
+                add_vertex.call(
+                  @activated.vertex_named("#{root_name}/#{subspec}"),
+                  used_by_non_library_targets_only,
+                )
+              end
+            end
+
+            vertex.outgoing_edges.each do |edge|
+              next unless edge_is_valid_for_target_platform?(edge, target.platform)
+              add_vertex.call(edge.destination, used_by_non_library_targets_only)
+            end
+          end
+
+          specs_by_target[target] = selected.values.sort_by(&:name)
+        end
+        specs_by_target
+      end
+
       private
 
       def apply_legacy_parent_lock(dependency)

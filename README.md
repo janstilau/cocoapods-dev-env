@@ -44,7 +44,7 @@ We want to use the release version in cocoapods repo. And do many check for stat
 
 2.2.x 的 `use_parent_lock_info!` 只投影父 Podfile 的顶层依赖，保留用于兼容已有工程。
 
-2.2.5 新增完整父工程环境模式：
+2.2.5+ 提供完整父工程环境模式：
 
 ```ruby
 plugin 'cocoapods-dev-env'
@@ -67,6 +67,10 @@ end
 ```ruby
 pod 'YDCommon/Echo', :dev_env => 'parent'
 ```
+
+2.2.6 起，如果一个 root 只通过 podspec 传递依赖变得可达，也会复用父 lock 为该 root
+实际启用的 subspec；子 Podfile 已直接声明的 root 或 subspec 仍保持自身明确选择。这样不需要
+把传递依赖提升成子 Podfile 的伪直接依赖。
 
 子 Podfile 的显式 version、`:source`、`:git` 或 `:path` 是有意覆盖；未覆盖的依赖仍继承父
 环境。未显式覆盖且父 lock 中不存在的依赖会直接报错，不会静默选择其他版本或 source。
