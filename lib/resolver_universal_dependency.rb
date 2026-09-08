@@ -37,12 +37,19 @@ module Pod
         environment = DevEnv.parent_project_environment
         return dependencies unless environment
 
+        environment.validate_dependency!(specification.name, required_by: 'Resolved selection (including default subspecs)')
+        dependencies.each do |dependency|
+          environment.validate_dependency!(dependency.name, required_by: specification.name)
+        end
+
         root_name = Specification.root_name(specification.name)
         return dependencies unless specification.name == root_name
         return dependencies if DevEnv.direct_parent_environment_root?(root_name)
 
         override = DevEnv.parent_dependency_override(root_name)
         return dependencies if override&.explicit?
+
+        environment.validate_root_selection!(root_name)
 
         inherited = environment.subspecs_for(root_name).map do |subspec|
           Dependency.new("#{root_name}/#{subspec}").tap do |dependency|
@@ -169,6 +176,7 @@ module Pod
         environment = DevEnv::ParentProjectEnvironment.load(
           option.fetch(:path),
           consumer_directory: consumer_directory,
+          exclude_subspecs: option.fetch(:exclude_subspecs, []),
         )
         DevEnv.parent_project_environment = environment
         DevEnv.reset_parent_dependency_overrides!

@@ -22,8 +22,10 @@ class ResolverSearchHarness < ResolverSearchBase
 end
 
 class ResolverDependenciesBase
+  attr_accessor :required_dependencies
+
   def dependencies_for(_specification)
-    []
+    required_dependencies || []
   end
 end
 
@@ -360,6 +362,98 @@ class ParentProjectEnvironmentTest < Minitest::Test
     assert_empty inherited
   end
 
+  def test_exclusion_filters_direct_parent_root_and_preserves_source
+    podfile = excluded_podfile("pod 'LocalRoot', :dev_env => 'parent'")
+    assert_equal ['LocalRoot/Core'], podfile.dependencies.map(&:name)
+    environment = Pod::DevEnv.parent_project_environment
+    dependency = environment.constrain(podfile.dependencies.first)
+    assert_equal '../../Parent/Example/developing_pods/LocalRoot', dependency.external_source[:path]
+    assert_equal 'abc123', environment.checkout_options_for('GitRoot')[:commit]
+  end
+
+  def test_exclusion_filters_transitive_siblings_and_does_not_walk_excluded_branch
+    @lockfile_path.write(parent_lock_contents.sub(
+      '- LocalRoot/Feature (1.0.0)',
+      "- LocalRoot/Feature (1.0.0):\n    - FeatureSDK/Core",
+    ).sub('- GitRoot (4.0.0)', "- FeatureSDK/Core (1.0.0)\n  - FeatureSDK/Extra (1.0.0)\n  - GitRoot (4.0.0)"))
+    contents = @lockfile_path.read.sub("    - Transitive\n", "    - Transitive\n    - FeatureSDK\n")
+    @lockfile_path.write(contents)
+    environment = load_environment(exclude_subspecs: ['LocalRoot/Feature'])
+    dependencies = environment.dependencies_with_parent_subspec_closure([Pod::Dependency.new('LocalRoot')])
+    assert_equal ['LocalRoot', 'LocalRoot/Core'], dependencies.map(&:name).sort
+    resolver = ResolverDependenciesHarness.new
+    root = Struct.new(:name, :version).new('LocalRoot', Pod::Version.new('1.0.0'))
+    assert_equal ['LocalRoot/Core'], resolver.dependencies_for(root).map(&:name)
+  end
+
+  def test_exclusion_rejects_explicit_child_request
+    error = assert_raises(Pod::DSLError) do
+      excluded_podfile("pod 'LocalRoot/Feature', :dev_env => 'parent'")
+    end
+    assert_includes error.message, 'Child Podfile requires LocalRoot/Feature'
+  end
+
+  def test_exclusion_rejects_explicit_subspecs_option
+    error = assert_raises(Pod::DSLError) do
+      excluded_podfile("pod 'LocalRoot', :dev_env => 'parent', :subspecs => ['Feature']")
+    end
+    assert_includes error.message, 'Child Podfile requires LocalRoot/Feature'
+  end
+
+  def test_resolver_search_conflict_identifies_root_and_excluded_subspec
+    environment = load_environment(exclude_subspecs: ['LocalRoot/Feature'])
+    error = assert_raises(Pod::Informative) do
+      environment.constrain(Pod::Dependency.new('LocalRoot/Feature'))
+    end
+    assert_includes error.message, 'Cannot inherit LocalRoot from parent Podfile.lock'
+    assert_includes error.message, 'requires LocalRoot/Feature'
+  end
+
+  def test_exclusion_rejects_required_dependency_with_owner
+    load_environment(exclude_subspecs: ['LocalRoot/Feature'])
+    resolver = ResolverDependenciesHarness.new
+    resolver.required_dependencies = [Pod::Dependency.new('LocalRoot/Feature')]
+    error = assert_raises(Pod::Informative) do
+      resolver.dependencies_for(Struct.new(:name).new('Consumer/Core'))
+    end
+    assert_includes error.message, 'Consumer/Core requires LocalRoot/Feature'
+  end
+
+  def test_exclusion_rejects_implicit_default_selection
+    load_environment(exclude_subspecs: ['LocalRoot/Feature'])
+    error = assert_raises(Pod::Informative) do
+      ResolverDependenciesHarness.new.dependencies_for(Struct.new(:name).new('LocalRoot/Feature'))
+    end
+    assert_includes error.message, 'including default subspecs'
+  end
+
+  def test_exclusion_rejects_all_parent_subspecs_instead_of_falling_back_to_defaults
+    error = assert_raises(Pod::DSLError) do
+      excluded_podfile("pod 'LocalRoot', :dev_env => 'parent'", ['LocalRoot/Core', 'LocalRoot/Feature'])
+    end
+    assert_includes error.message, 'All parent subspecs of LocalRoot are excluded'
+  end
+
+  def test_exclusion_matches_descendants_without_matching_similarly_named_siblings
+    @lockfile_path.write(parent_lock_contents.sub(
+      '- LocalRoot/Feature (1.0.0)',
+      "- LocalRoot/Feature (1.0.0)\n  - LocalRoot/Feature/Child (1.0.0)\n  - LocalRoot/FeatureExtra (1.0.0)",
+    ))
+    environment = load_environment(exclude_subspecs: ['LocalRoot/Feature'])
+    assert_equal ['Core', 'FeatureExtra'], environment.subspecs_for('LocalRoot')
+  end
+
+  def test_invalid_exclusions_fail_early
+    [nil, 'LocalRoot/Feature', ['LocalRoot'], ['LocalRoot/'], ['LocalRoot/Missing'], [42]].each do |value|
+      assert_raises(Pod::Informative) { load_environment(exclude_subspecs: value) }
+    end
+  end
+
+  def test_exclusions_do_not_leak_into_next_environment
+    load_environment(exclude_subspecs: ['LocalRoot/Feature'])
+    assert_equal ['Core', 'Feature'], load_environment.subspecs_for('LocalRoot')
+  end
+
   def test_unconfigured_transitive_dependency_missing_from_parent_fails
     environment = load_environment
 
@@ -387,10 +481,22 @@ class ParentProjectEnvironmentTest < Minitest::Test
 
   private
 
-  def load_environment
+  def excluded_podfile(declaration, exclusions = ['LocalRoot/Feature'])
+    podfile_path = @consumer_directory.join('Podfile')
+    podfile_path.write(<<~RUBY)
+      use_parent_project_environment! :path => #{@parent_directory.to_s.inspect}, :exclude_subspecs => #{exclusions.inspect}
+      target 'Child' do
+        #{declaration}
+      end
+    RUBY
+    Pod::Podfile.from_file(podfile_path)
+  end
+
+  def load_environment(exclude_subspecs: [])
     environment = Pod::DevEnv::ParentProjectEnvironment.load(
       @parent_directory,
       consumer_directory: @consumer_directory,
+      exclude_subspecs: exclude_subspecs,
     )
     Pod::DevEnv.parent_project_environment = environment
     environment

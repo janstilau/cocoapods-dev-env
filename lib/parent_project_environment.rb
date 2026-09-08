@@ -73,7 +73,7 @@ module Pod
     class ParentProjectEnvironment
       attr_reader :consumer_directory, :dependencies, :lockfile, :lockfile_path
 
-      def self.load(path, consumer_directory:)
+      def self.load(path, consumer_directory:, exclude_subspecs: [])
         consumer_directory = Pathname.new(consumer_directory).expand_path.cleanpath
         candidate = Pathname.new(path.to_s).expand_path(consumer_directory).cleanpath
         candidate = candidate.join('Podfile.lock') if candidate.directory?
@@ -82,16 +82,17 @@ module Pod
         end
 
         lockfile = Lockfile.from_file(candidate)
-        new(lockfile, candidate, consumer_directory)
+        new(lockfile, candidate, consumer_directory, exclude_subspecs: exclude_subspecs)
       end
 
-      def initialize(lockfile, lockfile_path, consumer_directory)
+      def initialize(lockfile, lockfile_path, consumer_directory, exclude_subspecs: [])
         @lockfile = lockfile
         @lockfile_path = Pathname.new(lockfile_path).expand_path.cleanpath
         @consumer_directory = Pathname.new(consumer_directory).expand_path.cleanpath
         @external_sources = normalized_hash(lockfile.internal_data['EXTERNAL SOURCES'])
         @checkout_options = normalized_hash(lockfile.internal_data['CHECKOUT OPTIONS'])
         @subspecs_by_root = build_subspecs_by_root
+        @excluded_subspecs = validate_excluded_subspecs(exclude_subspecs).freeze
         @pod_dependencies_by_name = build_pod_dependencies_by_name
         @dependencies = build_dependencies.freeze
       end
@@ -101,7 +102,28 @@ module Pod
       end
 
       def subspecs_for(name)
-        @subspecs_by_root.fetch(Specification.root_name(name), []).dup
+        root_name = Specification.root_name(name)
+        @subspecs_by_root.fetch(root_name, []).reject do |subspec|
+          excluded_subspec?("#{root_name}/#{subspec}")
+        end
+      end
+
+      def excluded_subspec?(name)
+        @excluded_subspecs.any? { |excluded| name == excluded || name.start_with?("#{excluded}/") }
+      end
+
+      def validate_dependency!(name, required_by:)
+        return unless excluded_subspec?(name)
+
+        raise Informative, "#{required_by} requires #{name}, but it is excluded by " \
+          'use_parent_project_environment! :exclude_subspecs. Remove the exclusion or the requiring dependency.'
+      end
+
+      def validate_root_selection!(name)
+        return if @subspecs_by_root.fetch(name, []).empty? || !subspecs_for(name).empty?
+
+        raise Informative, "All parent subspecs of #{name} are excluded. Remove the root declaration " \
+          'or select an allowed subspec explicitly.'
       end
 
       def checkout_options_for(name)
@@ -142,6 +164,9 @@ module Pod
           end
 
           @pod_dependencies_by_name.fetch(name, []).each do |dependency_name|
+            # The lock graph describes the parent's selection, not the child's
+            # actual podspec requirements. Validate real requirements in the resolver.
+            next if excluded_subspec?(dependency_name)
             next if scheduled.include?(dependency_name)
 
             scheduled << dependency_name
@@ -158,6 +183,7 @@ module Pod
 
       def constrain(dependency, override: nil)
         root_name = dependency.root_name
+        validate_dependency!(dependency.name, required_by: 'Child dependency graph')
         override ||= DevEnv.parent_dependency_override(root_name)
 
         return dependency if override&.full
@@ -177,6 +203,22 @@ module Pod
       end
 
       private
+
+      def validate_excluded_subspecs(value)
+        unless value.is_a?(Array) && value.all? { |name| name.is_a?(String) && name.match?(%r{\A[^/\s]+(?:/[^/\s]+)+\z}) }
+          raise Informative, ':exclude_subspecs must be an array of full subspec names, e.g. ["EchoCommon/ASR"].'
+        end
+
+        value.uniq.each do |name|
+          root_name = Specification.root_name(name)
+          known = @subspecs_by_root.fetch(root_name, []).any? do |subspec|
+            full_name = "#{root_name}/#{subspec}"
+            full_name == name || full_name.start_with?("#{name}/")
+          end
+          raise Informative, "Excluded subspec #{name} is not selected in parent Podfile.lock." unless known
+        end
+        value.uniq.map(&:dup)
+      end
 
       def build_dependencies
         roots.each_with_object({}) do |root_name, result|
@@ -309,6 +351,8 @@ module Pod
         root_name = Specification.root_name(name)
         environment = DevEnv.parent_project_environment
 
+        environment&.validate_dependency!(name, required_by: 'Child Podfile')
+
         if environment && !DevEnv.expanding_parent_root?(root_name)
           DevEnv.register_direct_parent_environment_root(root_name)
         end
@@ -316,6 +360,7 @@ module Pod
         capture_parent_environment_override(root_name, requirements, options, dev_env)
 
         if environment && dev_env == 'parent' && name == root_name && !options.key?(:subspecs)
+          environment.validate_root_selection!(root_name)
           subspecs = environment.subspecs_for(root_name)
           unless subspecs.empty?
             requirements = requirements.dup

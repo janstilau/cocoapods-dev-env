@@ -1,7 +1,7 @@
 plugin 'cocoapods-dev-env'
 
-unless defined?(Cocoapods::Dev::Env::VERSION) && Cocoapods::Dev::Env::VERSION == '2.2.5'
-  raise 'integration fixture did not load cocoapods-dev-env 2.2.5'
+unless defined?(Cocoapods::Dev::Env::VERSION) && Cocoapods::Dev::Env::VERSION == '2.2.7'
+  raise 'integration fixture did not load cocoapods-dev-env 2.2.7'
 end
 
 use_parent_project_environment! :path => '../../Parent'

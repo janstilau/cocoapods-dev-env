@@ -77,6 +77,37 @@ pod 'YDCommon/Echo', :dev_env => 'parent'
         
 
 
+2.2.7 起，可以在继承父工程环境时排除可选 subspec：
+
+```ruby
+use_parent_project_environment!(
+  :path => '../../../HiEchoApp/',
+  :exclude_subspecs => [
+    'EchoCommon/AppIntegration',
+    'EchoCommon/ASR',
+    'YDCommon/YDSocialImplByUmeng'
+  ]
+)
+
+target 'Example' do
+  pod 'CurrentPod', :path => '../'
+  pod 'EchoCommon', :dev_env => 'parent'
+  pod 'YDCommon', :dev_env => 'parent'
+end
+```
+
+`exclude_subspecs` 作用于整个子 Podfile 的父环境继承，包括直接 root 声明、传递依赖
+的兄弟 subspec 补入及 target membership。使用完整名称；排除一个 subspec 时也排除其
+下级，例如 `Foo/Feature` 包含 `Foo/Feature/Child`，不包含 `Foo/FeatureExtra`。
+名称必须匹配父 lock 中已选的 subspec 或其上级分组，拼写错误、root 名称和非法类型会报错。
+不传此参数时保留原有行为，版本、来源和 checkout 继承规则不变。
+
+排除只裁剪父环境自动补入的选择，不改写 podspec 的必需依赖或 CocoaPods 默认 subspec。
+子 Podfile 显式声明、实际 podspec 依赖或默认选择与排除项冲突时，安装会失败并给出冲突项；
+必须调整能力边界或取消排除，不能强行移除。一个 root 的父 subspec 被全部排除时，也会
+报错，避免退回默认选择。失去所有使用方的下游 SDK 自然退出依赖图；仍有其他使用方时保留。
+父工程 Podfile、lock 和生产 Pod 的依赖声明不会被此参数修改。
+
 ## Development
 
 After checking out the repo, run `bin/setup` to install dependencies. You can also run `bin/console` for an interactive prompt that will allow you to experiment.
